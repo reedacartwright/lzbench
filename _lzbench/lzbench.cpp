@@ -458,7 +458,7 @@ void lzbench_alloc(lzbench_params_t* params, FILE* in, char* encoder_list, bool 
 
     if (first_time)
     {
-        if (insize < (1<<20)) printf("WARNING: For small files with memcpy and fast compressors you can expect the cache effect causing much higher compression and decompression speed\n");
+        if (insize < (1<<20)) fprintf(stderr,"WARNING: For small files with memcpy and fast compressors you can expect the cache effect causing much higher compression and decompression speed\n");
 
         print_header(params);
 
