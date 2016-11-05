@@ -122,7 +122,7 @@ void print_time(lzbench_params_t *params, string_table_t& row)
     switch (params->textformat)
     {
         case CSV:
-            printf("%s,%llu,%llu,%llu,%.2f,%s\n", row.col1_algname.c_str(), (unsigned long long)ctime, (unsigned long long)dtime, (unsigned long long)row.col4_comprsize, ratio, row.col6_filename.c_str()); break;
+            printf("%s,%llu,%llu,%llu,%llu,%.2f,%s\n", row.col1_algname.c_str(), (unsigned long long)ctime, (unsigned long long)dtime, (unsigned long long)row.col5_origsize,(unsigned long long)row.col4_comprsize, ratio, row.col6_filename.c_str()); break;
         case TURBOBENCH:
             printf("%12llu %6.1f%9llu%9llu  %22s %s\n", (unsigned long long)row.col4_comprsize, ratio, (unsigned long long)ctime, (unsigned long long)dtime, row.col1_algname.c_str(), row.col6_filename.c_str()); break;
         case TEXT:
@@ -154,22 +154,25 @@ void print_stats(lzbench_params_t *params, const compressor_desc_t* desc, int le
     std::sort(dtime.begin(), dtime.end());
     uint64_t best_ctime, best_dtime;
     
-    switch (params->timetype)
-    {
-        default:
-        case FASTEST: 
-            best_ctime = ctime[0];
-            best_dtime = dtime[0];
-            break;
-        case AVERAGE: 
-            best_ctime = std::accumulate(ctime.begin(),ctime.end(),0) / ctime.size();
-            best_dtime = std::accumulate(dtime.begin(),dtime.end(),0) / dtime.size();
-            break;
-        case MEDIAN: 
-            best_ctime = ctime[ctime.size()/2];
-            best_dtime = dtime[dtime.size()/2];
-            break;
-    }
+    best_ctime = ctime[0];
+    best_dtime = dtime[0];
+
+    // switch (params->timetype)
+    // {
+    //     default:
+    //     case FASTEST: 
+    //         best_ctime = ctime[0];
+    //         best_dtime = dtime[0];
+    //         break;
+    //     case AVERAGE: 
+    //         best_ctime = std::accumulate(ctime.begin(),ctime.end(),0) / ctime.size();
+    //         best_dtime = std::accumulate(dtime.begin(),dtime.end(),0) / dtime.size();
+    //         break;
+    //     case MEDIAN: 
+    //         best_ctime = ctime[ctime.size()/2];
+    //         best_dtime = dtime[dtime.size()/2];
+    //         break;
+    // }
 
     if (desc->first_level == 0 && desc->last_level==0)
         format(col1_algname, "%s %s", desc->name, desc->version);
@@ -178,9 +181,9 @@ void print_stats(lzbench_params_t *params, const compressor_desc_t* desc, int le
 
     params->results.push_back(string_table_t(col1_algname, best_ctime, (decomp_error)?0:best_dtime, outsize, insize, params->in_filename));
     if (params->show_speed)
-        print_speed(params, params->results[params->results.size()-1]);
+        print_speed(params, params->results.back());
     else
-        print_time(params, params->results[params->results.size()-1]);
+        print_time(params, params->results.back());
 
     ctime.clear();
     dtime.clear();
@@ -267,7 +270,7 @@ inline int64_t lzbench_decompress(lzbench_params_t *params, size_t chunk_size, c
 
 void lzbench_test(lzbench_params_t *params, const compressor_desc_t* desc, int level, uint8_t *inbuf, size_t insize, uint8_t *compbuf, size_t comprsize, uint8_t *decomp, bench_rate_t rate, size_t param1)
 {
-    float speed;
+    double speed;
     int i, total_c_iters, total_d_iters;
     bench_timer_t loop_ticks, start_ticks, end_ticks, timer_ticks;
     int64_t complen=0, decomplen;
@@ -299,100 +302,65 @@ void lzbench_test(lzbench_params_t *params, const compressor_desc_t* desc, int l
         }
     }
 
-    total_c_iters = 0;
-    GetTime(timer_ticks);
-    do
-    {
-        i = 0;
-        uni_sleep(1); // give processor to other processes
-        GetTime(loop_ticks);
-        do
-        {
-            GetTime(start_ticks);
-            complen = lzbench_compress(params, chunk_size, desc->compress, compr_lens, inbuf, insize, compbuf, comprsize, param1, param2, workmem);
-            GetTime(end_ticks);
-            nanosec = GetDiffTime(rate, start_ticks, end_ticks);
-            if (nanosec >= 10000) ctime.push_back(nanosec);
-            i++;
-        }
-        while (GetDiffTime(rate, loop_ticks, end_ticks) < params->cloop_time);
+    i = 0;
+    uni_sleep(1); // give processor to other processes
+    GetTime(start_ticks);
+    do {
+        complen = lzbench_compress(params, chunk_size, desc->compress, compr_lens, inbuf, insize, compbuf, comprsize, param1, param2, workmem);
+        GetTime(end_ticks);
+        i++;
+        nanosec = GetDiffTime(rate, start_ticks, end_ticks);
+    } while (nanosec < params->cmintime*1000000 && i < params->c_iters);
+    ctime.push_back(nanosec/i);
 
-        nanosec = GetDiffTime(rate, loop_ticks, end_ticks);
-        ctime.push_back(nanosec/i);
-        speed = (float)insize*i*1000/nanosec;
-        LZBENCH_PRINT(8, "%s nanosec=%d\n", desc->name, (int)nanosec);
+    speed = (double)insize*i*1000/nanosec;
+    LZBENCH_PRINT(2, "%s compr iter=%d time=%.2fs speed=%.2f MB/s     \r", desc->name, i, nanosec/1000000000.0, speed);
 
-        if ((uint32_t)speed < params->cspeed) { LZBENCH_PRINT(7, "%s slower than %d MB/s\n", desc->name, (uint32_t)speed); return; } 
+    i = 0;
+    uni_sleep(1); // give processor to other processes
+    GetTime(start_ticks);
+    do {
+        decomplen = lzbench_decompress(params, chunk_size, desc->decompress, compr_lens, compbuf, complen, decomp, insize, param1, param2, workmem);
+        GetTime(end_ticks);
+        i++;
+        nanosec = GetDiffTime(rate, start_ticks, end_ticks);
+    } while (nanosec < params->dmintime*1000000 && i < params->d_iters);
+    dtime.push_back(nanosec/i);
 
-        total_nanosec = GetDiffTime(rate, timer_ticks, end_ticks);
-        total_c_iters += i;
-        if ((total_c_iters >= params->c_iters) && (total_nanosec > ((uint64_t)params->cmintime*1000000))) break;
-        LZBENCH_PRINT(2, "%s compr iter=%d time=%.2fs speed=%.2f MB/s     \r", desc->name, total_c_iters, total_nanosec/1000000000.0, speed);
+    if (insize != decomplen)
+    {   
+        decomp_error = true; 
+        LZBENCH_PRINT(5, "ERROR: inlen[%d] != outlen[%d]\n", (int32_t)insize, (int32_t)decomplen);
     }
-    while (true);
 
-
-    total_d_iters = 0;
-    GetTime(timer_ticks);
-    do
+    if (memcmp(inbuf, decomp, insize) != 0)
     {
-        i = 0;
-        uni_sleep(1); // give processor to other processes
-        GetTime(loop_ticks);
-        do
-        {
-            GetTime(start_ticks);
-            decomplen = lzbench_decompress(params, chunk_size, desc->decompress, compr_lens, compbuf, complen, decomp, insize, param1, param2, workmem);
-            GetTime(end_ticks);
-            nanosec = GetDiffTime(rate, start_ticks, end_ticks);
-            if (nanosec >= 10000) dtime.push_back(nanosec);
-            i++;
-        }
-        while (GetDiffTime(rate, loop_ticks, end_ticks) < params->dloop_time);
+        decomp_error = true; 
 
-        nanosec = GetDiffTime(rate, loop_ticks, end_ticks);
-        dtime.push_back(nanosec/i);
-        LZBENCH_PRINT(9, "%s dnanosec=%d\n", desc->name, (int)nanosec);
-
-        if (insize != decomplen)
-        {   
-            decomp_error = true; 
-            LZBENCH_PRINT(5, "ERROR: inlen[%d] != outlen[%d]\n", (int32_t)insize, (int32_t)decomplen);
-        }
+        size_t cmn = common(inbuf, decomp);
+        LZBENCH_PRINT(5, "ERROR in %s: common=%d/%d\n", desc->name, (int32_t)cmn, (int32_t)insize);
         
-        if (memcmp(inbuf, decomp, insize) != 0)
+        if (params->verbose >= 10)
         {
-            decomp_error = true; 
-
-            size_t cmn = common(inbuf, decomp);
-            LZBENCH_PRINT(5, "ERROR in %s: common=%d/%d\n", desc->name, (int32_t)cmn, (int32_t)insize);
-            
-            if (params->verbose >= 10)
-            {
-                char text[256];
-                snprintf(text, sizeof(text), "%s_failed", desc->name);
-                cmn /= chunk_size;
-                size_t err_size = MIN(insize, (cmn+1)*chunk_size);
-                err_size -= cmn*chunk_size;
-                printf("ERROR: fwrite %d-%d to %s\n", (int32_t)(cmn*chunk_size), (int32_t)(cmn*chunk_size+err_size), text);
-                FILE *f = fopen(text, "wb");
-                if (f) fwrite(inbuf+cmn*chunk_size, 1, err_size, f), fclose(f);
-                exit(1);
-            }
+            char text[256];
+            snprintf(text, sizeof(text), "%s_failed", desc->name);
+            cmn /= chunk_size;
+            size_t err_size = MIN(insize, (cmn+1)*chunk_size);
+            err_size -= cmn*chunk_size;
+            printf("ERROR: fwrite %d-%d to %s\n", (int32_t)(cmn*chunk_size), (int32_t)(cmn*chunk_size+err_size), text);
+            FILE *f = fopen(text, "wb");
+            if (f) fwrite(inbuf+cmn*chunk_size, 1, err_size, f), fclose(f);
+            exit(1);
         }
-
-        memset(decomp, 0, insize); // clear output buffer
-
-        if (decomp_error) break;
-        
-        total_nanosec = GetDiffTime(rate, timer_ticks, end_ticks);
-        total_d_iters += i;
-        if ((total_d_iters >= params->d_iters) && (total_nanosec > ((uint64_t)params->dmintime*1000000))) break;
-        LZBENCH_PRINT(2, "%s decompr iter=%d time=%.2fs speed=%.2f MB/s     \r", desc->name, total_d_iters, total_nanosec/1000000000.0, (float)insize*i*1000/nanosec);
     }
-    while (true);
 
- //   printf("total_c_iters=%d total_d_iters=%d            \n", total_c_iters, total_d_iters);
+    memset(decomp, 0, insize); // clear output buffer
+
+    if (decomp_error) goto done;
+
+    speed = (double)insize*i*1000/nanosec;
+    LZBENCH_PRINT(2, "%s decompr iter=%d time=%.2fs speed=%.2f MB/s     \r", desc->name, i, nanosec/1000000000.0, speed);
+
     print_stats(params, desc, level, ctime, dtime, insize, complen, decomp_error);
 
 done:
